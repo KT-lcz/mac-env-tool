@@ -53,6 +53,7 @@ const EnvVarEditor: React.FC<EnvVarEditorProps> = ({
     }
 
     onSave({
+      ...envVar,
       key: key.trim(),
       value: value,
       source: envVar?.source || 'custom',

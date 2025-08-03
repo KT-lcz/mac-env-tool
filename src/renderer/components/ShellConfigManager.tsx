@@ -15,7 +15,7 @@ import {
   Backup as BackupIcon,
   Warning as WarningIcon
 } from '@mui/icons-material'
-import { EnvVar, ShellConfig, ShellConfigData } from '../types'
+import { EnvVar, ShellConfig, ShellConfigData, AppSettings } from '../types'
 import EnvVarList from './EnvVarList'
 import EnvVarEditor from './EnvVarEditor'
 
@@ -32,32 +32,37 @@ const ShellConfigManager: React.FC<ShellConfigManagerProps> = ({
   const [selectedVar, setSelectedVar] = useState<EnvVar | null>(null)
   const [isLoading, setIsLoading] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
-  const [nonEnvLines, setNonEnvLines] = useState<string[]>([])
+  const [fileLines, setFileLines] = useState<string[]>([])
   const [hasChanges, setHasChanges] = useState(false)
   const [showSaveDialog, setShowSaveDialog] = useState(false)
+  const [settings, setSettings] = useState<AppSettings>({
+    commentOnDelete: true,
+    showCommentedVars: true
+  })
 
   const loadConfigData = async () => {
     if (!selectedConfig || !selectedConfig.exists) {
       setEnvVars([])
-      setNonEnvLines([])
+      setFileLines([])
       return
     }
 
     setIsLoading(true)
     try {
-      const result = await window.electronAPI.readShellConfig(selectedConfig.name)
-      if (result.success && result.envVars) {
-        const vars: EnvVar[] = Object.entries(result.envVars).map(([key, value]) => ({
-          key,
-          value,
-          source: selectedConfig.name
-        }))
-        setEnvVars(vars.sort((a, b) => a.key.localeCompare(b.key)))
-        setNonEnvLines(result.nonEnvLines || [])
+      const [configResult, settingsResult] = await Promise.all([
+        window.electronAPI.readShellConfig(selectedConfig.name),
+        window.electronAPI.getSettings()
+      ])
+      
+      if (configResult.success && configResult.envVars) {
+        setEnvVars(configResult.envVars.sort((a, b) => a.key.localeCompare(b.key)))
+        setFileLines(configResult.fileLines || [])
         setHasChanges(false)
       } else {
-        onShowNotification(`读取配置文件失败: ${result.error}`, 'error')
+        onShowNotification(`读取配置文件失败: ${configResult.error}`, 'error')
       }
+      
+      setSettings(settingsResult)
     } catch (error) {
       console.error('Error loading config data:', error)
       onShowNotification('读取配置文件时发生错误', 'error')
@@ -69,28 +74,115 @@ const ShellConfigManager: React.FC<ShellConfigManagerProps> = ({
   const handleSaveVar = (envVar: EnvVar) => {
     if (!envVar.key.trim()) return
 
-    setEnvVars(prev => {
-      const existingIndex = prev.findIndex(v => v.key === envVar.key)
-      if (existingIndex >= 0) {
-        const updated = [...prev]
-        updated[existingIndex] = { ...envVar, isEdited: true }
-        return updated
-      } else {
-        return [...prev, { ...envVar, isEdited: true }].sort((a, b) => a.key.localeCompare(b.key))
+    // 检查是否是修改现有变量（有id且能找到对应的变量）
+    const existingVar = envVar.id ? envVars.find(v => v.id === envVar.id) : null
+    
+    if (existingVar && existingVar.lineNumber !== undefined) {
+      // 修改现有环境变量：直接在原行修改
+      const originalLineNumber = existingVar.lineNumber
+      const newLine = formatEnvVarLine(envVar)
+      
+      // 直接替换原有行
+      setFileLines(prev => {
+        const newLines = [...prev]
+        if (originalLineNumber < newLines.length) {
+          newLines[originalLineNumber] = newLine
+        }
+        return newLines
+      })
+      
+      // 更新环境变量状态，保持原有行号和ID
+      const updatedVar = { 
+        ...envVar, 
+        id: existingVar.id, // 确保保持原有ID
+        lineNumber: originalLineNumber, 
+        isEdited: true 
       }
-    })
+      
+      setEnvVars(prev => 
+        prev.map(v => v.id === existingVar.id ? updatedVar : v)
+      )
+    } else {
+      // 添加新环境变量
+      const newVar = { 
+        ...envVar, 
+        id: `${envVar.key}_new_${Date.now()}`,
+        isEdited: true 
+      }
+      
+      const newLine = formatEnvVarLine(newVar)
+      
+      setFileLines(prev => {
+        const newLines = [...prev]
+        newLines.push(newLine)
+        newVar.lineNumber = newLines.length - 1
+        return newLines
+      })
+      
+      setEnvVars(prev => 
+        [...prev, newVar].sort((a, b) => a.key.localeCompare(b.key))
+      )
+    }
+    
     setSelectedVar(null)
     setHasChanges(true)
     onShowNotification('环境变量已修改（未保存）', 'info')
   }
 
-  const handleDeleteVar = (key: string) => {
-    setEnvVars(prev => prev.filter(v => v.key !== key))
-    if (selectedVar && selectedVar.key === key) {
+  const handleDeleteVar = (id: string) => {
+    const envVar = envVars.find(v => v.id === id)
+    if (!envVar) return
+
+    if (settings.commentOnDelete && envVar.lineNumber !== undefined) {
+      // 注释而不是删除
+      const newVar = { ...envVar, isCommented: true, isEdited: true }
+      setEnvVars(prev => 
+        prev.map(v => v.id === id ? newVar : v)
+      )
+      commentLineInFile(envVar)
+      onShowNotification(`已注释环境变量: ${envVar.key}（未保存）`, 'info')
+    } else {
+      // 完全删除
+      setEnvVars(prev => prev.filter(v => v.id !== id))
+      if (envVar.lineNumber !== undefined) {
+        removeLineFromFile(envVar)
+      }
+      onShowNotification(`已删除环境变量: ${envVar.key}（未保存）`, 'info')
+    }
+    
+    if (selectedVar && selectedVar.id === id) {
       setSelectedVar(null)
     }
     setHasChanges(true)
-    onShowNotification(`已删除环境变量: ${key}（未保存）`, 'info')
+  }
+
+  const handleRestoreVar = (id: string) => {
+    const envVar = envVars.find(v => v.id === id)
+    if (!envVar || !envVar.isCommented) return
+
+    // 取消注释
+    const restoredVar = { ...envVar, isCommented: false, isEdited: true }
+    setEnvVars(prev => 
+      prev.map(v => v.id === id ? restoredVar : v)
+    )
+    
+    // 在文件中取消注释
+    if (envVar.lineNumber !== undefined) {
+      setFileLines(prev => {
+        const newLines = [...prev]
+        if (envVar.lineNumber !== undefined && envVar.lineNumber < newLines.length) {
+          const line = newLines[envVar.lineNumber]
+          if (line.trim().startsWith('#')) {
+            // 移除注释符号
+            newLines[envVar.lineNumber] = line.replace(/^#\s*/, '')
+          }
+        }
+        return newLines
+      })
+    }
+    
+    setHasChanges(true)
+    onShowNotification(`已恢复环境变量: ${envVar.key}（未保存）`, 'info')
   }
 
   const handleAddVar = () => {
@@ -101,6 +193,50 @@ const ShellConfigManager: React.FC<ShellConfigManagerProps> = ({
       isEdited: true
     }
     setSelectedVar(newVar)
+  }
+
+  const commentLineInFile = (envVar: EnvVar) => {
+    if (envVar.lineNumber === undefined) return
+    
+    setFileLines(prev => {
+      const newLines = [...prev]
+      if (envVar.lineNumber !== undefined && envVar.lineNumber < newLines.length) {
+        const line = newLines[envVar.lineNumber]
+        if (!line.trim().startsWith('#')) {
+          newLines[envVar.lineNumber] = `# ${line}`
+        }
+      }
+      return newLines
+    })
+  }
+
+  const removeLineFromFile = (envVar: EnvVar) => {
+    if (envVar.lineNumber === undefined) return
+    
+    setFileLines(prev => {
+      const newLines = [...prev]
+      if (envVar.lineNumber !== undefined && envVar.lineNumber < newLines.length) {
+        newLines.splice(envVar.lineNumber, 1)
+        // 更新其他环境变量的行号
+        setEnvVars(currentVars => 
+          currentVars.map(v => ({
+            ...v,
+            lineNumber: v.lineNumber !== undefined && v.lineNumber > envVar.lineNumber! 
+              ? v.lineNumber - 1 
+              : v.lineNumber
+          }))
+        )
+      }
+      return newLines
+    })
+  }
+
+  const formatEnvVarLine = (envVar: EnvVar): string => {
+    const { key, value } = envVar
+    if (value.includes(' ') || value.includes('"') || value.includes("'") || value.includes('$')) {
+      return `export ${key}="${value.replace(/"/g, '\\"')}"`
+    }
+    return `export ${key}=${value}`
   }
 
   const handleSaveToFile = async () => {
@@ -114,16 +250,10 @@ const ShellConfigManager: React.FC<ShellConfigManagerProps> = ({
         return
       }
 
-      // 保存到文件
-      const envVarsObject = envVars.reduce((acc, env) => {
-        acc[env.key] = env.value
-        return acc
-      }, {} as Record<string, string>)
-
+      // 保存文件行
       const result = await window.electronAPI.writeShellConfig(
         selectedConfig.name,
-        envVarsObject,
-        nonEnvLines
+        fileLines
       )
 
       if (result.success) {
@@ -140,10 +270,15 @@ const ShellConfigManager: React.FC<ShellConfigManagerProps> = ({
     setShowSaveDialog(false)
   }
 
-  const filteredVars = envVars.filter(envVar =>
-    envVar.key.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    envVar.value.toLowerCase().includes(searchQuery.toLowerCase())
-  )
+  const filteredVars = envVars.filter(envVar => {
+    // 根据设置决定是否显示注释的变量
+    if (envVar.isCommented && !settings.showCommentedVars) {
+      return false
+    }
+    
+    return envVar.key.toLowerCase().includes(searchQuery.toLowerCase()) ||
+           envVar.value.toLowerCase().includes(searchQuery.toLowerCase())
+  })
 
   useEffect(() => {
     loadConfigData()
@@ -224,10 +359,10 @@ const ShellConfigManager: React.FC<ShellConfigManagerProps> = ({
             selectedVar={selectedVar}
             onSelectVar={setSelectedVar}
             onDeleteVar={handleDeleteVar}
+            onRestoreVar={handleRestoreVar}
             searchQuery={searchQuery}
             onSearchChange={setSearchQuery}
             isLoading={isLoading}
-            showAddButton={true}
             onAddVar={handleAddVar}
           />
         </Box>

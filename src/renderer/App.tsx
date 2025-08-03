@@ -7,13 +7,20 @@ import {
   Paper,
   Snackbar,
   Alert,
+  IconButton,
+  Tooltip
 } from '@mui/material'
+import {
+  Settings as SettingsIcon
+} from '@mui/icons-material'
 import ShellConfigSelector from './components/ShellConfigSelector'
 import ShellConfigManager from './components/ShellConfigManager'
+import SettingsDialog from './components/SettingsDialog'
 import { ShellConfig } from './types'
 
 function App() {
   const [selectedShellConfig, setSelectedShellConfig] = useState<ShellConfig | null>(null)
+  const [settingsDialogOpen, setSettingsDialogOpen] = useState(false)
   const [notification, setNotification] = useState<{
     open: boolean
     message: string
@@ -31,6 +38,14 @@ function App() {
           <Typography variant="h6" component="div" sx={{ flexGrow: 1 }}>
             Shell环境变量管理器
           </Typography>
+          <Tooltip title="设置">
+            <IconButton
+              color="inherit"
+              onClick={() => setSettingsDialogOpen(true)}
+            >
+              <SettingsIcon />
+            </IconButton>
+          </Tooltip>
         </Toolbar>
       </AppBar>
 
@@ -47,6 +62,7 @@ function App() {
           <ShellConfigSelector
             onSelectConfig={setSelectedShellConfig}
             selectedConfig={selectedShellConfig}
+            onShowNotification={showNotification}
           />
         </Paper>
 
@@ -80,6 +96,12 @@ function App() {
           {notification.message}
         </Alert>
       </Snackbar>
+
+      <SettingsDialog
+        open={settingsDialogOpen}
+        onClose={() => setSettingsDialogOpen(false)}
+        onShowNotification={showNotification}
+      />
     </Box>
   )
 }
