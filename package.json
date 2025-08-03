@@ -1,5 +1,5 @@
 {
-  "name": "shell-env-manager",
+  "name": "mac-env-tool",
   "version": "1.0.0",
   "description": "Shell环境变量图形化管理工具",
   "main": "dist/main.js",
@@ -35,7 +35,7 @@
   },
   "build": {
     "appId": "com.yourname.shell-env-manager",
-    "productName": "Shell Environment Manager",
+    "productName": "Environment Manager",
     "directories": {
       "output": "release"
     },
