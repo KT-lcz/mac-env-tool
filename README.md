@@ -1,3 +1,5 @@
+# TODO
+
 # Shell环境变量管理器
 
 一个专门用于管理Shell配置文件中环境变量的图形化工具，基于 Electron + React + TypeScript 开发，专为 macOS 设计。
